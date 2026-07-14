@@ -41,6 +41,7 @@ class BackgroundRecord:
     patches: int
     boxes: int
     mask_ratio: float
+    crop_box: str
 
 
 def read_image(path: Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
@@ -113,6 +114,51 @@ def boxes_to_mask(
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
         mask = cv2.dilate(mask, kernel, iterations=1)
     return mask
+
+
+def detect_nonwhite_crop(
+    image: np.ndarray,
+    white_threshold: int,
+    margin: int,
+) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """Crop away near-white canvas around the real manuscript image."""
+    if image.ndim == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
+    content = gray < white_threshold
+    coords = np.argwhere(content)
+    height, width = gray.shape[:2]
+    if coords.size == 0:
+        return image, (0, 0, width, height)
+
+    y1, x1 = coords.min(axis=0)
+    y2, x2 = coords.max(axis=0) + 1
+    x1 = max(0, int(x1) - margin)
+    y1 = max(0, int(y1) - margin)
+    x2 = min(width, int(x2) + margin)
+    y2 = min(height, int(y2) + margin)
+    if x2 <= x1 or y2 <= y1:
+        return image, (0, 0, width, height)
+    return image[y1:y2, x1:x2].copy(), (x1, y1, x2, y2)
+
+
+def shift_boxes_to_crop(
+    boxes: list[tuple[int, int, int, int]],
+    crop_box: tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> list[tuple[int, int, int, int]]:
+    crop_x1, crop_y1, crop_x2, crop_y2 = crop_box
+    shifted: list[tuple[int, int, int, int]] = []
+    for x1, y1, x2, y2 in boxes:
+        nx1 = max(0, min(width, x1 - crop_x1))
+        ny1 = max(0, min(height, y1 - crop_y1))
+        nx2 = max(0, min(width, x2 - crop_x1))
+        ny2 = max(0, min(height, y2 - crop_y1))
+        if nx2 > nx1 and ny2 > ny1:
+            shifted.append((nx1, ny1, nx2, ny2))
+    return shifted
 
 
 def inpaint_background(image: np.ndarray, mask: np.ndarray, radius: int) -> np.ndarray:
@@ -204,6 +250,9 @@ def process_source(
     dilate: int,
     inpaint_radius: int,
     enhance: bool,
+    crop_white_border: bool,
+    white_threshold: int,
+    crop_margin: int,
     rng: random.Random,
 ) -> list[BackgroundRecord]:
     source_dir = data_root / source_rel
@@ -226,6 +275,13 @@ def process_source(
         image = read_image(image_path, cv2.IMREAD_COLOR)
         if image is None:
             continue
+
+        crop_box = (0, 0, image.shape[1], image.shape[0])
+        if crop_white_border:
+            image, crop_box = detect_nonwhite_crop(image, white_threshold, crop_margin)
+            boxes = shift_boxes_to_crop(boxes, crop_box, image.shape[1], image.shape[0])
+            if not boxes:
+                continue
 
         mask = boxes_to_mask(image.shape[:2], boxes, mask_pad, dilate)
         background = inpaint_background(image, mask, inpaint_radius)
@@ -250,6 +306,7 @@ def process_source(
                 patches=patch_count,
                 boxes=len(boxes),
                 mask_ratio=float(np.count_nonzero(mask) / mask.size),
+                crop_box=",".join(str(v) for v in crop_box),
             )
         )
 
@@ -283,6 +340,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dilate", type=int, default=2)
     parser.add_argument("--inpaint_radius", type=int, default=5)
     parser.add_argument("--no_enhance", action="store_true", help="Disable brightness/color/noise/texture perturbation.")
+    parser.add_argument("--no_crop_white_border", action="store_true", help="Disable automatic near-white canvas cropping.")
+    parser.add_argument("--white_threshold", type=int, default=245, help="Pixels brighter than this are treated as white canvas.")
+    parser.add_argument("--crop_margin", type=int, default=2, help="Margin kept around detected non-white content.")
     parser.add_argument("--seed", type=int, default=42)
     return parser
 
@@ -307,6 +367,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             dilate=args.dilate,
             inpaint_radius=args.inpaint_radius,
             enhance=not args.no_enhance,
+            crop_white_border=not args.no_crop_white_border,
+            white_threshold=args.white_threshold,
+            crop_margin=args.crop_margin,
             rng=rng,
         )
         all_records.extend(records)
