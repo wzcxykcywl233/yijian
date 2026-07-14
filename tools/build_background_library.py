@@ -116,7 +116,7 @@ def boxes_to_mask(
     return mask
 
 
-def detect_content_crop(
+def detect_pure_white_crop(
     image: np.ndarray,
     margin: int,
 ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
@@ -154,6 +154,47 @@ def detect_content_crop(
     y1 = max(0, top - margin)
     x2 = min(width, right + margin)
     y2 = min(height, bottom + margin)
+    if x2 <= x1 or y2 <= y1:
+        return image, (0, 0, width, height)
+    return image[y1:y2, x1:x2].copy(), (x1, y1, x2, y2)
+
+
+def detect_edge_crop(
+    image: np.ndarray,
+    margin: int,
+    canny_low: int,
+    canny_high: int,
+    edge_dilate: int,
+    min_row_edge_pixels: int | None = None,
+    min_col_edge_pixels: int | None = None,
+) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """Crop canvas by finding the bounding box of meaningful edge projections."""
+    if image.ndim == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
+    height, width = gray.shape[:2]
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, canny_low, canny_high)
+    if edge_dilate > 0:
+        kernel_size = edge_dilate * 2 + 1
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        edges = cv2.dilate(edges, kernel, iterations=1)
+
+    row_counts = np.count_nonzero(edges, axis=1)
+    col_counts = np.count_nonzero(edges, axis=0)
+    row_min = min_row_edge_pixels if min_row_edge_pixels is not None else max(2, int(width * 0.015))
+    col_min = min_col_edge_pixels if min_col_edge_pixels is not None else max(3, int(height * 0.002))
+    rows = np.flatnonzero(row_counts >= row_min)
+    cols = np.flatnonzero(col_counts >= col_min)
+
+    if rows.size == 0 or cols.size == 0:
+        return detect_pure_white_crop(image, margin)
+
+    y1 = max(0, int(rows[0]) - margin)
+    y2 = min(height, int(rows[-1]) + 1 + margin)
+    x1 = max(0, int(cols[0]) - margin)
+    x2 = min(width, int(cols[-1]) + 1 + margin)
     if x2 <= x1 or y2 <= y1:
         return image, (0, 0, width, height)
     return image[y1:y2, x1:x2].copy(), (x1, y1, x2, y2)
@@ -266,8 +307,11 @@ def process_source(
     dilate: int,
     inpaint_radius: int,
     enhance: bool,
-    crop_white_border: bool,
+    crop_method: str,
     crop_margin: int,
+    canny_low: int,
+    canny_high: int,
+    edge_dilate: int,
     rng: random.Random,
 ) -> list[BackgroundRecord]:
     source_dir = data_root / source_rel
@@ -292,8 +336,15 @@ def process_source(
             continue
 
         crop_box = (0, 0, image.shape[1], image.shape[0])
-        if crop_white_border:
-            image, crop_box = detect_content_crop(image, crop_margin)
+        if crop_method == "pure_white":
+            image, crop_box = detect_pure_white_crop(image, crop_margin)
+        elif crop_method == "edge":
+            image, crop_box = detect_edge_crop(image, crop_margin, canny_low, canny_high, edge_dilate)
+        elif crop_method == "none":
+            pass
+        else:
+            raise ValueError(f"Unsupported crop method: {crop_method}")
+        if crop_method != "none":
             boxes = shift_boxes_to_crop(boxes, crop_box, image.shape[1], image.shape[0])
             if not boxes:
                 continue
@@ -355,8 +406,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dilate", type=int, default=2)
     parser.add_argument("--inpaint_radius", type=int, default=5)
     parser.add_argument("--no_enhance", action="store_true", help="Disable brightness/color/noise/texture perturbation.")
-    parser.add_argument("--no_crop_white_border", action="store_true", help="Disable automatic near-white canvas cropping.")
-    parser.add_argument("--crop_margin", type=int, default=0, help="Margin kept around detected non-white content.")
+    parser.add_argument(
+        "--crop_method",
+        choices=["edge", "pure_white", "none"],
+        default="edge",
+        help="Canvas crop method. edge uses Canny projections; pure_white crops only all-white rows/columns.",
+    )
+    parser.add_argument("--no_crop_white_border", action="store_true", help="Deprecated alias for --crop_method none.")
+    parser.add_argument("--crop_margin", type=int, default=32, help="Margin kept around detected manuscript content.")
+    parser.add_argument("--canny_low", type=int, default=40)
+    parser.add_argument("--canny_high", type=int, default=120)
+    parser.add_argument("--edge_dilate", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     return parser
 
@@ -365,6 +425,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     rng = random.Random(args.seed)
     sources = parse_sources(args.source)
+    crop_method = "none" if args.no_crop_white_border else args.crop_method
     args.out_root.mkdir(parents=True, exist_ok=True)
 
     all_records: list[BackgroundRecord] = []
@@ -381,8 +442,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             dilate=args.dilate,
             inpaint_radius=args.inpaint_radius,
             enhance=not args.no_enhance,
-            crop_white_border=not args.no_crop_white_border,
+            crop_method=crop_method,
             crop_margin=args.crop_margin,
+            canny_low=args.canny_low,
+            canny_high=args.canny_high,
+            edge_dilate=args.edge_dilate,
             rng=rng,
         )
         all_records.extend(records)
