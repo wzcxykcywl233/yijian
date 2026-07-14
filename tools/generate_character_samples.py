@@ -124,12 +124,17 @@ def composite_on_background(
     alpha: np.ndarray,
     background: np.ndarray,
     rng: random.Random,
+    ink_strength_range: tuple[float, float],
+    alpha_power: float,
+    darkness_gamma: float,
 ) -> np.ndarray:
     size = background.shape[0]
     darkness = cv2.resize(glyph_darkness, (size, size), interpolation=cv2.INTER_AREA)
     a = cv2.resize(alpha, (size, size), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
-    a = cv2.GaussianBlur(a, (5, 5), 0)
+    a = cv2.GaussianBlur(a, (3, 3), 0)
     a = np.clip(a, 0.0, 1.0)
+    a = np.power(a, alpha_power)
+    darkness = np.power(np.clip(darkness, 0.0, 1.0), darkness_gamma)
 
     bg = background.astype(np.float32)
     bg_gray = cv2.cvtColor(background, cv2.COLOR_BGR2GRAY).astype(np.float32)
@@ -137,7 +142,7 @@ def composite_on_background(
     light_scale = np.clip(local_light / max(float(np.mean(local_light)), 1.0), 0.82, 1.18)
     light_scale = light_scale[:, :, None]
 
-    ink_strength = rng.uniform(85, 135)
+    ink_strength = rng.uniform(ink_strength_range[0], ink_strength_range[1])
     tint = np.array([rng.uniform(-5, 8), rng.uniform(-4, 6), rng.uniform(-2, 5)], dtype=np.float32)
     ink = np.clip(bg - darkness[:, :, None] * ink_strength * light_scale + tint, 0, 255)
     out = bg * (1.0 - a[:, :, None]) + ink * a[:, :, None]
@@ -154,6 +159,10 @@ def generate_samples(
     limit_chars: int | None,
     image_size: int,
     seed: int,
+    mask_feather: int,
+    ink_strength_range: tuple[float, float],
+    alpha_power: float,
+    darkness_gamma: float,
 ) -> list[GeneratedSample]:
     rng = random.Random(seed)
     rows = read_csv(clean_samples)
@@ -172,7 +181,7 @@ def generate_samples(
     if not backgrounds:
         raise FileNotFoundError(f"No background patches found under {background_root}")
 
-    cfg = ExtractConfig(backend="opencv", feather=7, morph_kernel=3, grabcut_iters=2)
+    cfg = ExtractConfig(backend="opencv", feather=mask_feather, morph_kernel=3, grabcut_iters=2)
     generated: list[GeneratedSample] = []
     image_out = out_dir / "images"
     debug_out = out_dir / "debug"
@@ -195,7 +204,7 @@ def generate_samples(
             if bg is None:
                 continue
             bg = resize_cover(bg, image_size)
-            out = composite_on_background(darkness, alpha, bg, rng)
+            out = composite_on_background(darkness, alpha, bg, rng, ink_strength_range, alpha_power, darkness_gamma)
 
             rel = Path(safe_char) / f"{safe_char}_{idx:04d}.png"
             out_path = image_out / rel
@@ -230,6 +239,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--per_char", type=int, default=2)
     parser.add_argument("--limit_chars", type=int, help="Limit number of classes for smoke tests.")
     parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--mask_feather", type=int, default=3, help="Character alpha feather. Smaller values keep strokes sharper.")
+    parser.add_argument("--ink_strength_min", type=float, default=155.0)
+    parser.add_argument("--ink_strength_max", type=float, default=225.0)
+    parser.add_argument("--alpha_power", type=float, default=0.55, help="Values < 1 make alpha more solid while preserving soft edges.")
+    parser.add_argument("--darkness_gamma", type=float, default=0.72, help="Values < 1 darken weak ink pixels.")
     parser.add_argument("--seed", type=int, default=42)
     return parser
 
@@ -246,6 +260,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         limit_chars=args.limit_chars,
         image_size=args.image_size,
         seed=args.seed,
+        mask_feather=args.mask_feather,
+        ink_strength_range=(args.ink_strength_min, args.ink_strength_max),
+        alpha_power=args.alpha_power,
+        darkness_gamma=args.darkness_gamma,
     )
     write_manifest(args.out_dir / "generated_samples.csv", rows)
     summary = {"generated": len(rows), "out_dir": str(args.out_dir)}

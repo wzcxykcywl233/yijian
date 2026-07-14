@@ -54,6 +54,25 @@ C:\yijian_project\envs\yijian\Scripts\python.exe .\tools\generate_character_samp
   --image_size 128
 ```
 
+如果生成字符偏浅，可以加深墨色、减弱柔化：
+
+```powershell
+C:\yijian_project\envs\yijian\Scripts\python.exe .\tools\generate_character_samples.py `
+  --data_root C:\yijian_project\data\raw `
+  --clean_samples C:\yijian_project\data\label_index\clean_samples.csv `
+  --rare_chars C:\yijian_project\data\label_index\rare_chars.csv `
+  --background_root C:\yijian_project\data\background_library_smoke_edge `
+  --out_dir C:\yijian_project\data\char_aug_smoke_dark `
+  --limit_chars 5 `
+  --per_char 3 `
+  --image_size 128 `
+  --mask_feather 1 `
+  --ink_strength_min 190 `
+  --ink_strength_max 260 `
+  --alpha_power 0.45 `
+  --darkness_gamma 0.6
+```
+
 输出：
 
 ```text
@@ -65,3 +84,10 @@ char_aug_smoke/
 ```
 
 `debug/` 里会保存部分 alpha mask 和 darkness 图，方便检查单字是否被正确提取。
+
+## 墨色与边缘参数
+
+- `--mask_feather`：字符 mask 羽化半径，默认 3。若字符太糊，降到 1。
+- `--ink_strength_min/max`：融合时墨色压暗强度，默认 155-225。若字符太浅，提高到 190-260。
+- `--alpha_power`：小于 1 会让 alpha 主体更实，默认 0.55。
+- `--darkness_gamma`：小于 1 会加深淡墨区域，默认 0.72。
