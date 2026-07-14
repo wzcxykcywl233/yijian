@@ -116,28 +116,44 @@ def boxes_to_mask(
     return mask
 
 
-def detect_nonwhite_crop(
+def detect_content_crop(
     image: np.ndarray,
-    white_threshold: int,
     margin: int,
 ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
-    """Crop away near-white canvas around the real manuscript image."""
+    """Crop pure-white canvas by scanning inward from four directions.
+
+    A row/column is cropped only when every pixel in it is pure white. Scanning
+    stops as soon as any non-white pixel is found.
+    """
     if image.ndim == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        white = np.all(image == 255, axis=2)
     else:
-        gray = image
-    content = gray < white_threshold
-    coords = np.argwhere(content)
-    height, width = gray.shape[:2]
-    if coords.size == 0:
+        white = image == 255
+    height, width = white.shape[:2]
+
+    top = 0
+    while top < height and bool(np.all(white[top, :])):
+        top += 1
+
+    bottom = height
+    while bottom > top and bool(np.all(white[bottom - 1, :])):
+        bottom -= 1
+
+    left = 0
+    while left < width and bool(np.all(white[:, left])):
+        left += 1
+
+    right = width
+    while right > left and bool(np.all(white[:, right - 1])):
+        right -= 1
+
+    if top >= bottom or left >= right:
         return image, (0, 0, width, height)
 
-    y1, x1 = coords.min(axis=0)
-    y2, x2 = coords.max(axis=0) + 1
-    x1 = max(0, int(x1) - margin)
-    y1 = max(0, int(y1) - margin)
-    x2 = min(width, int(x2) + margin)
-    y2 = min(height, int(y2) + margin)
+    x1 = max(0, left - margin)
+    y1 = max(0, top - margin)
+    x2 = min(width, right + margin)
+    y2 = min(height, bottom + margin)
     if x2 <= x1 or y2 <= y1:
         return image, (0, 0, width, height)
     return image[y1:y2, x1:x2].copy(), (x1, y1, x2, y2)
@@ -251,7 +267,6 @@ def process_source(
     inpaint_radius: int,
     enhance: bool,
     crop_white_border: bool,
-    white_threshold: int,
     crop_margin: int,
     rng: random.Random,
 ) -> list[BackgroundRecord]:
@@ -278,7 +293,7 @@ def process_source(
 
         crop_box = (0, 0, image.shape[1], image.shape[0])
         if crop_white_border:
-            image, crop_box = detect_nonwhite_crop(image, white_threshold, crop_margin)
+            image, crop_box = detect_content_crop(image, crop_margin)
             boxes = shift_boxes_to_crop(boxes, crop_box, image.shape[1], image.shape[0])
             if not boxes:
                 continue
@@ -341,8 +356,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--inpaint_radius", type=int, default=5)
     parser.add_argument("--no_enhance", action="store_true", help="Disable brightness/color/noise/texture perturbation.")
     parser.add_argument("--no_crop_white_border", action="store_true", help="Disable automatic near-white canvas cropping.")
-    parser.add_argument("--white_threshold", type=int, default=245, help="Pixels brighter than this are treated as white canvas.")
-    parser.add_argument("--crop_margin", type=int, default=2, help="Margin kept around detected non-white content.")
+    parser.add_argument("--crop_margin", type=int, default=0, help="Margin kept around detected non-white content.")
     parser.add_argument("--seed", type=int, default=42)
     return parser
 
@@ -368,7 +382,6 @@ def main(argv: Iterable[str] | None = None) -> int:
             inpaint_radius=args.inpaint_radius,
             enhance=not args.no_enhance,
             crop_white_border=not args.no_crop_white_border,
-            white_threshold=args.white_threshold,
             crop_margin=args.crop_margin,
             rng=rng,
         )
