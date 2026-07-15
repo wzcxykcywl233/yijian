@@ -99,13 +99,85 @@ def normalize_glyph_darkness(image: np.ndarray, alpha: np.ndarray) -> np.ndarray
     return darkness
 
 
+def make_source_background_context(
+    image: np.ndarray,
+    alpha: np.ndarray,
+    white_threshold: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate usable local background from the single-character crop.
+
+    White scan padding is deliberately assigned zero weight, so it cannot be
+    treated as bamboo-slip texture during the later background pre-fusion step.
+    """
+    glyph = alpha > 8
+    white = np.all(image >= white_threshold, axis=2)
+    usable = (~glyph) & (~white)
+
+    inpaint_mask = np.where(glyph | white, 255, 0).astype(np.uint8)
+    if int(np.count_nonzero(usable)) < max(16, image.shape[0] * image.shape[1] // 200):
+        context = image.copy()
+        weight = np.zeros(alpha.shape, dtype=np.float32)
+    else:
+        context = cv2.inpaint(image, inpaint_mask, 3, cv2.INPAINT_TELEA)
+        weight = usable.astype(np.float32)
+        weight = cv2.GaussianBlur(weight, (0, 0), 7)
+        weight = np.clip(weight / max(float(weight.max()), 1e-6), 0.0, 1.0)
+    return context, weight
+
+
+def match_context_to_background(context: np.ndarray, background: np.ndarray, weight: np.ndarray) -> np.ndarray:
+    mask = weight > 0.08
+    if int(np.count_nonzero(mask)) < 16:
+        return context
+
+    src = context.astype(np.float32)
+    bg = background.astype(np.float32)
+    src_mean = np.mean(src[mask], axis=0)
+    bg_mean = np.mean(bg[mask], axis=0)
+    matched = src + (bg_mean - src_mean) * 0.75
+
+    src_gray = cv2.cvtColor(np.clip(src, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    bg_gray = cv2.cvtColor(background, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    src_std = max(float(np.std(src_gray[mask])), 1.0)
+    bg_std = max(float(np.std(bg_gray[mask])), 1.0)
+    contrast = np.clip(bg_std / src_std, 0.75, 1.35)
+    matched = bg_mean + (matched - bg_mean) * contrast
+    return np.clip(matched, 0, 255).astype(np.uint8)
+
+
+def prefuse_background(
+    background: np.ndarray,
+    source_context: np.ndarray,
+    source_weight: np.ndarray,
+    strength: float,
+) -> np.ndarray:
+    if strength <= 0:
+        return background
+
+    size = background.shape[0]
+    context = cv2.resize(source_context, (size, size), interpolation=cv2.INTER_CUBIC)
+    weight = cv2.resize(source_weight, (size, size), interpolation=cv2.INTER_AREA).astype(np.float32)
+    weight = cv2.GaussianBlur(weight, (0, 0), 5)
+    weight = np.clip(weight * strength, 0.0, 0.85)
+    if float(weight.max()) <= 0:
+        return background
+
+    context = match_context_to_background(context, background, weight)
+    bg = background.astype(np.float32)
+    ctx = context.astype(np.float32)
+    fused = bg * (1.0 - weight[:, :, None]) + ctx * weight[:, :, None]
+    return np.clip(fused, 0, 255).astype(np.uint8)
+
+
 def random_affine(
     glyph_darkness: np.ndarray,
     alpha: np.ndarray,
+    source_context: np.ndarray,
+    source_weight: np.ndarray,
     rng: random.Random,
     max_rotate: float,
     scale_range: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray, float, float]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
     h, w = alpha.shape[:2]
     angle = rng.uniform(-max_rotate, max_rotate)
     scale = rng.uniform(scale_range[0], scale_range[1])
@@ -116,7 +188,18 @@ def random_affine(
     matrix[:, 2] += (tx, ty)
     warped_darkness = cv2.warpAffine(glyph_darkness, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     warped_alpha = cv2.warpAffine(alpha, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-    return warped_darkness, warped_alpha, angle, scale
+    warped_context = cv2.warpAffine(source_context, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+    warped_weight = cv2.warpAffine(source_weight, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    return warped_darkness, warped_alpha, warped_context, warped_weight, angle, scale
+
+
+def suppress_alpha_on_white_padding(alpha: np.ndarray, source_weight: np.ndarray, strength: float) -> np.ndarray:
+    if strength <= 0:
+        return alpha
+    support = cv2.GaussianBlur(source_weight.astype(np.float32), (0, 0), 9)
+    support = np.clip(support / max(float(support.max()), 1e-6), 0.0, 1.0)
+    keep = np.clip((1.0 - strength) + strength * support, 0.0, 1.0)
+    return np.clip(alpha.astype(np.float32) * keep, 0, 255).astype(np.uint8)
 
 
 def composite_on_background(
@@ -163,6 +246,10 @@ def generate_samples(
     ink_strength_range: tuple[float, float],
     alpha_power: float,
     darkness_gamma: float,
+    prefuse_source_bg: bool,
+    source_bg_strength: float,
+    source_white_threshold: int,
+    white_alpha_suppression: float,
 ) -> list[GeneratedSample]:
     rng = random.Random(seed)
     rows = read_csv(clean_samples)
@@ -197,13 +284,25 @@ def generate_samples(
                 continue
             alpha = make_glyph_alpha(image, cfg)
             darkness = normalize_glyph_darkness(image, alpha)
-            darkness, alpha, angle, scale = random_affine(darkness, alpha, rng, max_rotate=6.0, scale_range=(0.92, 1.08))
+            source_context, source_weight = make_source_background_context(image, alpha, source_white_threshold)
+            darkness, alpha, source_context, source_weight, angle, scale = random_affine(
+                darkness,
+                alpha,
+                source_context,
+                source_weight,
+                rng,
+                max_rotate=6.0,
+                scale_range=(0.92, 1.08),
+            )
+            alpha = suppress_alpha_on_white_padding(alpha, source_weight, white_alpha_suppression)
 
             bg_path = rng.choice(backgrounds)
             bg = read_image(bg_path, cv2.IMREAD_COLOR)
             if bg is None:
                 continue
             bg = resize_cover(bg, image_size)
+            if prefuse_source_bg:
+                bg = prefuse_background(bg, source_context, source_weight, source_bg_strength)
             out = composite_on_background(darkness, alpha, bg, rng, ink_strength_range, alpha_power, darkness_gamma)
 
             rel = Path(safe_char) / f"{safe_char}_{idx:04d}.png"
@@ -213,6 +312,8 @@ def generate_samples(
             if idx == 0:
                 write_image(debug_out / f"{safe_char}_alpha.png", alpha)
                 write_image(debug_out / f"{safe_char}_darkness.png", (np.clip(darkness, 0, 1) * 255).astype(np.uint8))
+                write_image(debug_out / f"{safe_char}_source_bg_context.png", source_context)
+                write_image(debug_out / f"{safe_char}_source_bg_weight.png", (np.clip(source_weight, 0, 1) * 255).astype(np.uint8))
 
             generated.append(
                 GeneratedSample(
@@ -220,7 +321,7 @@ def generate_samples(
                     char=char,
                     source_image=str(image_path),
                     background=str(bg_path),
-                    method="opencv_grabcut_softmask_bg_fusion",
+                    method="opencv_grabcut_softmask_source_bg_prefusion" if prefuse_source_bg else "opencv_grabcut_softmask_bg_fusion",
                     angle=round(angle, 4),
                     scale=round(scale, 4),
                 )
@@ -244,6 +345,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ink_strength_max", type=float, default=225.0)
     parser.add_argument("--alpha_power", type=float, default=0.55, help="Values < 1 make alpha more solid while preserving soft edges.")
     parser.add_argument("--darkness_gamma", type=float, default=0.72, help="Values < 1 darken weak ink pixels.")
+    parser.add_argument("--no_prefuse_source_bg", action="store_true", help="Disable single-character local background pre-fusion.")
+    parser.add_argument("--source_bg_strength", type=float, default=0.55, help="How strongly usable non-white local crop background is blended into the target background before compositing.")
+    parser.add_argument("--source_white_threshold", type=int, default=245, help="Pixels with all channels above this value are treated as white scan padding.")
+    parser.add_argument("--white_alpha_suppression", type=float, default=0.65, help="Suppress character alpha in areas supported only by white scan padding.")
     parser.add_argument("--seed", type=int, default=42)
     return parser
 
@@ -264,6 +369,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         ink_strength_range=(args.ink_strength_min, args.ink_strength_max),
         alpha_power=args.alpha_power,
         darkness_gamma=args.darkness_gamma,
+        prefuse_source_bg=not args.no_prefuse_source_bg,
+        source_bg_strength=args.source_bg_strength,
+        source_white_threshold=args.source_white_threshold,
+        white_alpha_suppression=args.white_alpha_suppression,
     )
     write_manifest(args.out_dir / "generated_samples.csv", rows)
     summary = {"generated": len(rows), "out_dir": str(args.out_dir)}

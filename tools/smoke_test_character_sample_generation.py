@@ -31,7 +31,10 @@ def make_fixture() -> tuple[Path, Path, Path, Path]:
     char_dir = data_root / "toy_single"
     char_dir.mkdir(parents=True, exist_ok=True)
 
-    img = np.full((96, 96, 3), 222, np.uint8)
+    img = np.full((96, 96, 3), 255, np.uint8)
+    img[14:82, 18:78] = (215, 222, 230)
+    for x in range(18, 78, 8):
+        cv2.line(img, (x, 14), (x + 3, 81), (198, 207, 219), 1)
     cv2.line(img, (28, 18), (68, 78), (35, 28, 22), 8)
     cv2.line(img, (24, 55), (74, 55), (35, 28, 22), 7)
     cv2.GaussianBlur(img, (3, 3), 0, dst=img)
