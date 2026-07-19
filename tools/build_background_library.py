@@ -45,6 +45,8 @@ class BackgroundRecord:
 
 
 def read_image(path: Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
+    if not path.exists():
+        return None
     data = np.fromfile(str(path), dtype=np.uint8)
     if data.size == 0:
         return None
@@ -253,32 +255,69 @@ def enhance_background_patch(patch: np.ndarray, rng: random.Random) -> np.ndarra
     return out
 
 
+def is_patch_usable(
+    patch: np.ndarray,
+    mask_patch: np.ndarray | None,
+    max_mask_ratio: float,
+    max_white_ratio: float,
+    min_std: float,
+) -> bool:
+    if mask_patch is not None and float(np.count_nonzero(mask_patch) / mask_patch.size) > max_mask_ratio:
+        return False
+    if patch.ndim == 3:
+        white_ratio = float(np.mean(np.all(patch >= 245, axis=2)))
+        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+    else:
+        white_ratio = float(np.mean(patch >= 245))
+        gray = patch
+    if white_ratio > max_white_ratio:
+        return False
+    return float(np.std(gray)) >= min_std
+
+
 def crop_patches(
     background: np.ndarray,
     patch_size: int,
     patches_per_image: int,
     rng: random.Random,
     enhance: bool,
+    avoid_mask: np.ndarray | None,
+    max_mask_ratio: float,
+    max_white_ratio: float,
+    min_std: float,
+    max_attempts_per_patch: int,
 ) -> list[np.ndarray]:
     height, width = background.shape[:2]
     if height <= 0 or width <= 0:
         return []
 
+    work = background
+    work_mask = avoid_mask
+    if height < patch_size or width < patch_size:
+        scale = max(patch_size / height, patch_size / width)
+        new_size = (int(width * scale) + 1, int(height * scale) + 1)
+        work = cv2.resize(background, new_size, interpolation=cv2.INTER_CUBIC)
+        if avoid_mask is not None:
+            work_mask = cv2.resize(avoid_mask, new_size, interpolation=cv2.INTER_NEAREST)
+    wh, ww = work.shape[:2]
+
     patches: list[np.ndarray] = []
-    for _ in range(patches_per_image):
-        if height < patch_size or width < patch_size:
-            scale = max(patch_size / height, patch_size / width)
-            resized = cv2.resize(background, (int(width * scale) + 1, int(height * scale) + 1), interpolation=cv2.INTER_CUBIC)
-            work = resized
-            wh, ww = work.shape[:2]
-        else:
-            work = background
-            wh, ww = height, width
+    attempts = 0
+    max_attempts = max(1, patches_per_image * max_attempts_per_patch)
+    while len(patches) < patches_per_image and attempts < max_attempts:
+        attempts += 1
         x = rng.randint(0, max(0, ww - patch_size))
         y = rng.randint(0, max(0, wh - patch_size))
         patch = work[y : y + patch_size, x : x + patch_size].copy()
+        mask_patch = work_mask[y : y + patch_size, x : x + patch_size] if work_mask is not None else None
+
+        if not is_patch_usable(patch, mask_patch, max_mask_ratio, max_white_ratio, min_std):
+            continue
+
         if enhance:
             patch = enhance_background_patch(patch, rng)
+            if not is_patch_usable(patch, mask_patch, max_mask_ratio, max_white_ratio, min_std):
+                continue
         patches.append(patch)
     return patches
 
@@ -312,6 +351,10 @@ def process_source(
     canny_low: int,
     canny_high: int,
     edge_dilate: int,
+    max_patch_mask_ratio: float,
+    max_patch_white_ratio: float,
+    min_patch_std: float,
+    patch_attempts: int,
     rng: random.Random,
 ) -> list[BackgroundRecord]:
     source_dir = data_root / source_rel
@@ -358,7 +401,20 @@ def process_source(
         write_image(mask_path, mask)
 
         patch_count = 0
-        for idx, patch in enumerate(crop_patches(background, patch_size, patches_per_image, rng, enhance)):
+        for idx, patch in enumerate(
+            crop_patches(
+                background,
+                patch_size,
+                patches_per_image,
+                rng,
+                enhance,
+                avoid_mask=mask,
+                max_mask_ratio=max_patch_mask_ratio,
+                max_white_ratio=max_patch_white_ratio,
+                min_std=min_patch_std,
+                max_attempts_per_patch=patch_attempts,
+            )
+        ):
             patch_path = source_out / "patches" / f"{xml_path.stem}_{idx:03d}.png"
             write_image(patch_path, patch)
             patch_count += 1
@@ -417,6 +473,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--canny_low", type=int, default=40)
     parser.add_argument("--canny_high", type=int, default=120)
     parser.add_argument("--edge_dilate", type=int, default=1)
+    parser.add_argument("--max_patch_mask_ratio", type=float, default=0.02, help="Reject patches that overlap character masks more than this ratio.")
+    parser.add_argument("--max_patch_white_ratio", type=float, default=0.35, help="Reject mostly white scan-canvas patches above this ratio.")
+    parser.add_argument("--min_patch_std", type=float, default=4.0, help="Reject near-flat patches with grayscale standard deviation below this value.")
+    parser.add_argument("--patch_attempts", type=int, default=40, help="Random attempts per requested patch before giving up.")
     parser.add_argument("--seed", type=int, default=42)
     return parser
 
@@ -447,13 +507,17 @@ def main(argv: Iterable[str] | None = None) -> int:
             canny_low=args.canny_low,
             canny_high=args.canny_high,
             edge_dilate=args.edge_dilate,
+            max_patch_mask_ratio=args.max_patch_mask_ratio,
+            max_patch_white_ratio=args.max_patch_white_ratio,
+            min_patch_std=args.min_patch_std,
+            patch_attempts=args.patch_attempts,
             rng=rng,
         )
         all_records.extend(records)
         print(f"{source_name}: {len(records)} backgrounds")
 
     manifest = args.out_root / "manifest.csv"
-    with manifest.open("w", newline="", encoding="utf-8") as f:
+    with manifest.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=list(BackgroundRecord.__dataclass_fields__.keys()))
         writer.writeheader()
         for record in all_records:

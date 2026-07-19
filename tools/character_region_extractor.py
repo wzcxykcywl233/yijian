@@ -41,6 +41,8 @@ class ExtractResult:
 
 
 def read_image(path: Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
+    if not path.exists():
+        return None
     data = np.fromfile(str(path), dtype=np.uint8)
     if data.size == 0:
         return None

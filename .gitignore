@@ -138,7 +138,10 @@ dmypy.json
 cython_debug/
 
 # Local smoke-test and augmentation outputs
+.codex_deps/
 tmp/
+data_exp/
+experiments/
 outputs/
 augmented/
 *.ckpt

@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+import shutil
 from pathlib import Path
 
 import cv2
@@ -24,25 +25,27 @@ def write_image(path: Path, image: np.ndarray) -> None:
 
 
 def make_fixture() -> tuple[Path, Path]:
+    if TMP.exists():
+        shutil.rmtree(TMP)
     data_root = TMP / "data"
     source = data_root / "toy" / "img"
     label = data_root / "toy" / "label"
     source.mkdir(parents=True, exist_ok=True)
     label.mkdir(parents=True, exist_ok=True)
 
-    h, w = 160, 128
+    h, w = 256, 256
     y = np.linspace(0, 1, h)[:, None]
     x = np.linspace(0, 1, w)[None, :]
     bg = 198 + 20 * x + 12 * np.sin(y * 18)
     image = np.dstack([bg + 6, bg + 2, bg - 8]).clip(0, 255).astype(np.uint8)
-    cv2.line(image, (50, 28), (76, 130), (35, 28, 22), 9)
-    cv2.line(image, (30, 75), (100, 75), (34, 29, 24), 8)
+    cv2.line(image, (106, 78), (132, 180), (35, 28, 22), 9)
+    cv2.line(image, (86, 125), (156, 125), (34, 29, 24), 8)
     write_image(source / "1.png", image)
 
     xml = """<?xml version='1.0' encoding='utf-8'?>
 <annotation>
   <filename>1.png</filename>
-  <object><name>test</name><bndbox><xmin>25</xmin><ymin>22</ymin><xmax>105</xmax><ymax>136</ymax></bndbox></object>
+  <object><name>test</name><bndbox><xmin>80</xmin><ymin>70</ymin><xmax>165</xmax><ymax>190</ymax></bndbox></object>
 </annotation>
 """
     (label / "1.xml").write_text(xml, encoding="utf-8")
@@ -66,6 +69,8 @@ def main() -> int:
         "2",
         "--patch_size",
         "64",
+        "--crop_method",
+        "none",
         "--seed",
         "7",
     ]

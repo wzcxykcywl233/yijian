@@ -1,0 +1,4 @@
+numpy
+opencv-python
+# Optional for remote full training:
+torch

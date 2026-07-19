@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,8 @@ def write_image(path: Path, image: np.ndarray) -> None:
 
 
 def make_fixture() -> tuple[Path, Path, Path, Path]:
+    if TMP.exists():
+        shutil.rmtree(TMP)
     data_root = TMP / "data"
     bg_root = TMP / "backgrounds"
     out_dir = TMP / "out"
@@ -84,6 +87,8 @@ def main() -> int:
     outputs = list((out_dir / "images").rglob("*.png"))
     if len(outputs) != 2:
         raise AssertionError(f"expected 2 generated images, got {len(outputs)}")
+    if not (out_dir / "images" / "一").exists():
+        raise AssertionError("character-named output directory missing")
     if not (out_dir / "generated_samples.csv").exists():
         raise AssertionError("manifest missing")
     print(f"smoke ok: generated={len(outputs)}, output={out_dir}")

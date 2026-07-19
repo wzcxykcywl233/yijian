@@ -57,9 +57,10 @@ def build_index(
     data_root: Path,
     label_files: list[Path],
     exclude_chars: set[str],
-) -> tuple[list[LabelRow], list[LabelRow], Counter[str]]:
+) -> tuple[list[LabelRow], list[LabelRow], list[LabelRow], Counter[str]]:
     kept: list[LabelRow] = []
     excluded: list[LabelRow] = []
+    missing_images: list[LabelRow] = []
     counts: Counter[str] = Counter()
 
     for rel_label in label_files:
@@ -79,15 +80,17 @@ def build_index(
             )
             if char in exclude_chars:
                 excluded.append(item)
+            elif not (data_root / item.image_path).exists():
+                missing_images.append(item)
             else:
                 kept.append(item)
                 counts[char] += 1
-    return kept, excluded, counts
+    return kept, excluded, missing_images, counts
 
 
 def write_rows(path: Path, rows: Iterable[LabelRow]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(LabelRow.__dataclass_fields__.keys()))
         writer.writeheader()
         for row in rows:
@@ -96,7 +99,7 @@ def write_rows(path: Path, rows: Iterable[LabelRow]) -> None:
 
 def write_counts(path: Path, counts: Counter[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["char", "count"])
         writer.writeheader()
         for char, count in sorted(counts.items(), key=lambda x: (x[1], x[0])):
@@ -105,7 +108,7 @@ def write_counts(path: Path, counts: Counter[str]) -> None:
 
 def write_rare(path: Path, counts: Counter[str], min_count: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["char", "count", "need_to_min_count"])
         writer.writeheader()
         for char, count in sorted(counts.items(), key=lambda x: (x[1], x[0])):
@@ -133,11 +136,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     label_files = parse_label_files(args.label_file)
     exclude_chars = set(args.exclude_char or [])
-    kept, excluded, counts = build_index(args.data_root, label_files, exclude_chars)
+    kept, excluded, missing_images, counts = build_index(args.data_root, label_files, exclude_chars)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     write_rows(args.out_dir / "clean_samples.csv", kept)
     write_rows(args.out_dir / "excluded_unknown_samples.csv", excluded)
+    write_rows(args.out_dir / "missing_image_samples.csv", missing_images)
     write_counts(args.out_dir / "class_counts.csv", counts)
     write_rare(args.out_dir / "rare_chars.csv", counts, args.min_count)
 
@@ -147,6 +151,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "exclude_chars": sorted(exclude_chars),
         "kept_samples": len(kept),
         "excluded_samples": len(excluded),
+        "missing_image_samples": len(missing_images),
         "classes": len(counts),
         "rare_classes": rare_count,
         "min_count": args.min_count,
