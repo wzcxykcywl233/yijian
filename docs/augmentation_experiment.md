@@ -133,7 +133,15 @@ difficulty_aug_experiment/
 - `support`
 - `reason`
 
-`experiment_summary.csv` 是主结果表，包含每个阶段/方法的验证准确率、训练样本数、增强样本数、保留的非困难 simple_fusion 样本数和困难字数量。
+`experiment_summary.csv` 是主结果表，包含每个阶段/方法的整体验证准确率、训练样本数、增强样本数、保留的非困难 simple_fusion 样本数和困难字数量。
+
+同时会额外汇总困难字子集指标：
+
+- `difficult_eval_samples`
+- `difficult_correct`
+- `difficult_accuracy`
+- `difficult_mean_accuracy`
+- `difficult_accuracy_delta_vs_simple`
 
 ## 对照原则
 

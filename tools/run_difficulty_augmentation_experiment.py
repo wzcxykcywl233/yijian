@@ -62,6 +62,11 @@ def write_summary(path: Path, rows: list[dict[str, object]]) -> None:
         "generated_samples",
         "retained_simple_samples",
         "difficult_classes",
+        "difficult_eval_samples",
+        "difficult_correct",
+        "difficult_accuracy",
+        "difficult_mean_accuracy",
+        "difficult_accuracy_delta_vs_simple",
         "metrics_dir",
         "augment_dir",
     ]
@@ -108,6 +113,27 @@ def write_manifest_subset(
     ]
     write_csv(out_manifest, rows, fieldnames)
     return len(rows)
+
+
+def difficult_subset_metrics(per_class_metrics: Path, difficult_chars: set[str]) -> dict[str, object]:
+    if not difficult_chars:
+        return {
+            "difficult_eval_samples": "",
+            "difficult_correct": "",
+            "difficult_accuracy": "",
+            "difficult_mean_accuracy": "",
+        }
+
+    rows = [row for row in read_csv(per_class_metrics) if row.get("char", "") in difficult_chars]
+    support = sum(to_int(row.get("support", "0")) for row in rows)
+    correct = sum(to_int(row.get("correct", "0")) for row in rows)
+    mean_accuracy = sum(to_float(row.get("accuracy", "0")) for row in rows) / len(rows) if rows else 0.0
+    return {
+        "difficult_eval_samples": support,
+        "difficult_correct": correct,
+        "difficult_accuracy": round(correct / support, 6) if support else 0.0,
+        "difficult_mean_accuracy": round(mean_accuracy, 6),
+    }
 
 
 def select_difficult_by_simple_gain(
@@ -320,7 +346,8 @@ def run_experiment(args: argparse.Namespace) -> None:
     baseline_dir = args.out_dir / "models" / "baseline_real"
     run(train_cmd(args, baseline_dir))
     baseline_metrics = read_json(baseline_dir / "metrics.json")
-    rows.append({"stage": "baseline", "method": "real_only", "metrics_dir": str(baseline_dir), **baseline_metrics})
+    baseline_row = {"stage": "baseline", "method": "real_only", "metrics_dir": str(baseline_dir), **baseline_metrics}
+    rows.append(baseline_row)
 
     simple_aug = args.out_dir / "augment" / "simple_fusion"
     run(generate_cmd(args, splits / "train_rare_chars.csv", simple_aug, "none"))
@@ -342,18 +369,23 @@ def run_experiment(args: argparse.Namespace) -> None:
     difficult_chars = {str(row["char"]) for row in difficult}
     retained_simple_manifest = simple_aug / "non_difficult_generated_samples.csv"
     retained_simple_samples = write_manifest_subset(simple_manifest, retained_simple_manifest, difficult_chars)
-    rows.append(
-        {
-            "stage": "simple_fusion",
-            "method": "none",
-            "metrics_dir": str(simple_dir),
-            "augment_dir": str(simple_aug),
-            "generated_samples": generated_count(simple_aug),
-            "retained_simple_samples": "",
-            "difficult_classes": difficult_classes,
-            **simple_metrics,
-        }
-    )
+    baseline_row.update(difficult_subset_metrics(baseline_dir / "per_class_metrics.csv", difficult_chars))
+    baseline_row["difficult_accuracy_delta_vs_simple"] = ""
+    simple_subset = difficult_subset_metrics(simple_dir / "per_class_metrics.csv", difficult_chars)
+    simple_difficult_accuracy = to_float(str(simple_subset.get("difficult_accuracy", "0")))
+    simple_row = {
+        "stage": "simple_fusion",
+        "method": "none",
+        "metrics_dir": str(simple_dir),
+        "augment_dir": str(simple_aug),
+        "generated_samples": generated_count(simple_aug),
+        "retained_simple_samples": "",
+        "difficult_classes": difficult_classes,
+        **simple_metrics,
+        **simple_subset,
+        "difficult_accuracy_delta_vs_simple": 0.0,
+    }
+    rows.append(simple_row)
 
     methods = [method.strip() for method in args.pre_extract_methods.split(",") if method.strip()]
     for method in methods:
@@ -362,6 +394,8 @@ def run_experiment(args: argparse.Namespace) -> None:
         model_dir = args.out_dir / "models" / f"difficult_{method}"
         run(train_cmd(args, model_dir, [retained_simple_manifest, aug_dir / "generated_samples.csv"]))
         metrics = read_json(model_dir / "metrics.json")
+        subset = difficult_subset_metrics(model_dir / "per_class_metrics.csv", difficult_chars)
+        difficult_accuracy = to_float(str(subset.get("difficult_accuracy", "0")))
         rows.append(
             {
                 "stage": "difficult_reaugment",
@@ -372,6 +406,8 @@ def run_experiment(args: argparse.Namespace) -> None:
                 "retained_simple_samples": retained_simple_samples,
                 "difficult_classes": difficult_classes,
                 **metrics,
+                **subset,
+                "difficult_accuracy_delta_vs_simple": round(difficult_accuracy - simple_difficult_accuracy, 6),
             }
         )
 
