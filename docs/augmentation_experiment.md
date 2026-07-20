@@ -1,22 +1,50 @@
-# 困难字符二阶段增强实验
+# 困难字二阶段增强实验
 
 ## 实验目标
 
-对少样本字符先做真实数据训练和简单背景融合训练，再根据验证集逐类准确率找出困难字符。困难字符不沿用第一轮简单融合数据，而是分别采用不同的“图像预增强后再背景融合”方法重新生成数据，并比较重训指标。
+本实验用于判断：对少样本字符而言，哪些图像预增强方法能比“直接做简单背景融合”更有效。
 
-实验流程：
+困难字的定义不是单纯“识别准确率低”，而是：
+
+```text
+少样本字符 + 简单背景融合相对真实数据 baseline 没有明显正向作用，或造成退化
+```
+
+这些字的常见表现可能包括：字形模糊导致字符分割困难、背景深色裂纹被误分为笔画、源单字像素低导致复杂笔画不可分等。脚本用逐字验证集指标来近似这种现象。
+
+## 流程
 
 ```text
 clean_samples.csv
 -> 固定 train/val/test 划分
--> 真实数据 baseline 训练
--> 简单背景融合补齐到 target_count
--> 简单融合训练
--> 根据 val per-class accuracy 选择困难字符
--> 困难字符分别用 gamma / clahe / usm / 组合方法重新增强
--> 每种增强方法单独训练
--> 汇总指标，选择效果最好的增强方法
+-> 仅真实数据训练 baseline_real
+-> 对少样本字做 simple_fusion，补齐到 target_count
+-> 用真实训练集 + simple_fusion 训练 simple_fusion 模型
+-> 比较 baseline_real 与 simple_fusion 的逐字验证指标
+-> 选出“简单融合无明显增益/退化”的困难字
+-> 对困难字分别使用 gamma / clahe / usm / 组合方法进行预增强后再背景融合
+-> 每种困难字重增强方法单独训练
+-> 汇总指标，比较哪种图像增强方法最有效
 ```
+
+困难字筛选默认条件：
+
+- 真实训练集中该字数量 `< target_count`
+- baseline 和 simple_fusion 的验证集中都出现过该字
+- simple_fusion 相对 baseline 的准确率增益 `<= difficulty_min_improvement`
+- 且满足以下任一情况：
+  - simple_fusion 准确率 `<= difficulty_threshold`
+  - simple_fusion 相对 baseline 变差
+
+默认参数：
+
+```text
+target_count = 20
+difficulty_threshold = 0.6
+difficulty_min_improvement = 0.02
+```
+
+如果设置 `--difficulty_top_k`，会优先选择准确率增益最低、simple_fusion 准确率最低、验证支持数较多的字符。
 
 ## 本地冒烟测试
 
@@ -27,7 +55,7 @@ $env:PYTHONPATH=".\.codex_deps"
 python .\tools\smoke_test_difficulty_augmentation_experiment.py
 ```
 
-烟测使用 `nearest_centroid` 后端，不依赖 PyTorch。
+冒烟测试默认使用 `nearest_centroid` 后端，不依赖 PyTorch。
 
 ## 远程正式运行
 
@@ -35,22 +63,22 @@ python .\tools\smoke_test_difficulty_augmentation_experiment.py
 
 ```powershell
 python .\tools\build_label_index.py `
-  --data_root . `
+  --data_root C:\yijian_project\data\raw `
   --out_dir .\data_exp\label_index `
   --min_count 20
 
 python .\tools\build_single_char_background_library.py `
-  --data_root . `
+  --data_root C:\yijian_project\data\raw `
   --clean_samples .\data_exp\label_index\clean_samples.csv `
   --out_root .\data_exp\single_char_background_library `
   --patch_size 128
 ```
 
-然后运行完整实验。若远程有 PyTorch，建议使用 `--backend torch_cnn`；否则可先用 `nearest_centroid` 做连通性检查。
+然后运行完整实验：
 
 ```powershell
-python .\tools\run_difficulty_augmentation_experiment.py `
-  --data_root . `
+& $PY .\tools\run_difficulty_augmentation_experiment.py `
+  --data_root $DATA_ROOT `
   --clean_samples .\data_exp\label_index\clean_samples.csv `
   --background_root .\data_exp\single_char_background_library `
   --out_dir .\data_exp\difficulty_aug_experiment `
@@ -60,6 +88,7 @@ python .\tools\run_difficulty_augmentation_experiment.py `
   --batch_size 128 `
   --pre_extract_methods gamma,clahe,usm,gamma_usm,guided_gamma_usm,median_gamma_usm `
   --difficulty_threshold 0.6 `
+  --difficulty_min_improvement 0.02 `
   --difficulty_top_k 100 `
   --strict_background_sources
 ```
@@ -84,18 +113,29 @@ difficulty_aug_experiment/
       per_class_metrics.csv
       difficult_chars.csv
     simple_fusion/
+      metrics.json
+      per_class_metrics.csv
     difficult_gamma/
     ...
+  difficult_chars_by_simple_gain.csv
   experiment_summary.csv
   experiment_summary.json
 ```
 
-`experiment_summary.csv` 是主结果表，包含每个阶段/方法的验证准确率、训练样本数、增强样本数和困难字符数量。每个 `models/*/per_class_metrics.csv` 可用于分析具体哪些字符提升或下降。
+`difficult_chars_by_simple_gain.csv` 是二阶段重增强真正使用的困难字清单，包含：
+
+- `baseline_accuracy`
+- `simple_accuracy`
+- `accuracy_delta`
+- `support`
+- `reason`
+
+`experiment_summary.csv` 是主结果表，包含每个阶段/方法的验证准确率、训练样本数、增强样本数和困难字数量。
 
 ## 对照原则
 
 - `splits/` 只生成一次，所有方法共享同一 train/val/test，避免划分差异影响结论。
-- 第一轮 `simple_fusion` 用 `--pre_extract_enhance none`。
-- 困难字符阶段只使用“真实训练集 + 当前方法重新生成的数据”，不混入第一轮简单融合数据。
+- 第一轮 `simple_fusion` 使用 `--pre_extract_enhance none`。
+- 困难字阶段只使用“真实训练集 + 当前方法重新生成的数据”，不混入第一轮 simple_fusion 数据。
 - 背景默认四源轮转，正式实验建议加 `--strict_background_sources`，确保四种医简背景都参与。
-- 选择最终方法时优先看同一验证集上的整体准确率、困难字符平均准确率和逐类提升情况；测试集建议只在最终候选方法确定后使用一次。
+- 选择最终方法时，优先看同一验证集上的整体准确率、困难字平均准确率和逐类提升情况；测试集建议只在最终候选方法确定后使用一次。
