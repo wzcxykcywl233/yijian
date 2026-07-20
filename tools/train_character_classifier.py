@@ -227,15 +227,19 @@ def select_difficult(
     target_count: int,
 ) -> list[dict[str, object]]:
     candidates = [m for m in metrics if m.support > 0]
-    selected = [m for m in candidates if m.accuracy <= threshold]
-    if top_k is not None and len(selected) < top_k:
-        selected_chars = {m.char for m in selected}
-        for metric in sorted(candidates, key=lambda x: (x.accuracy, -x.support, x.char)):
-            if metric.char not in selected_chars:
-                selected.append(metric)
-                selected_chars.add(metric.char)
-            if len(selected) >= top_k:
-                break
+    ranked = sorted(candidates, key=lambda x: (x.accuracy, -x.support, x.char))
+    selected = [m for m in ranked if m.accuracy <= threshold]
+    if top_k is not None:
+        if len(selected) >= top_k:
+            selected = selected[:top_k]
+        else:
+            selected_chars = {m.char for m in selected}
+            for metric in ranked:
+                if metric.char not in selected_chars:
+                    selected.append(metric)
+                    selected_chars.add(metric.char)
+                if len(selected) >= top_k:
+                    break
     return [
         {
             "char": metric.char,
