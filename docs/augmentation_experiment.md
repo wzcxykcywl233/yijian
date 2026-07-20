@@ -22,6 +22,7 @@ clean_samples.csv
 -> 用真实训练集 + simple_fusion 训练 simple_fusion 模型
 -> 比较 baseline_real 与 simple_fusion 的逐字验证指标
 -> 选出“简单融合无明显增益/退化”的困难字
+-> 保留非困难字的 simple_fusion 样本
 -> 对困难字分别使用 gamma / clahe / usm / 组合方法进行预增强后再背景融合
 -> 每种困难字重增强方法单独训练
 -> 汇总指标，比较哪种图像增强方法最有效
@@ -104,6 +105,8 @@ difficulty_aug_experiment/
     train_rare_chars.csv
   augment/
     simple_fusion/
+      generated_samples.csv
+      non_difficult_generated_samples.csv
     difficult_gamma/
     difficult_clahe/
     ...
@@ -130,12 +133,12 @@ difficulty_aug_experiment/
 - `support`
 - `reason`
 
-`experiment_summary.csv` 是主结果表，包含每个阶段/方法的验证准确率、训练样本数、增强样本数和困难字数量。
+`experiment_summary.csv` 是主结果表，包含每个阶段/方法的验证准确率、训练样本数、增强样本数、保留的非困难 simple_fusion 样本数和困难字数量。
 
 ## 对照原则
 
 - `splits/` 只生成一次，所有方法共享同一 train/val/test，避免划分差异影响结论。
 - 第一轮 `simple_fusion` 使用 `--pre_extract_enhance none`。
-- 困难字阶段只使用“真实训练集 + 当前方法重新生成的数据”，不混入第一轮 simple_fusion 数据。
+- 困难字阶段使用“真实训练集 + 非困难字 simple_fusion 样本 + 当前方法重新生成的困难字样本”。也就是说，只替换困难字的 simple_fusion 数据，避免把对其他字有效的简单融合样本一起丢掉。
 - 背景默认四源轮转，正式实验建议加 `--strict_background_sources`，确保四种医简背景都参与。
 - 选择最终方法时，优先看同一验证集上的整体准确率、困难字平均准确率和逐类提升情况；测试集建议只在最终候选方法确定后使用一次。

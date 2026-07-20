@@ -7,8 +7,9 @@ Experiment flow:
 3. Generate simple background-fusion samples and retrain.
 4. Select difficult classes by comparing real-only and simple-fusion
    validation metrics.
-5. Discard simple-fusion samples for those classes, regenerate with each
-   pre-extraction image enhancement method, retrain, and compare metrics.
+5. Replace simple-fusion samples only for difficult classes, regenerate them
+   with each pre-extraction image enhancement method, retrain, and compare
+   metrics.
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ def write_summary(path: Path, rows: list[dict[str, object]]) -> None:
         "real_train_samples",
         "augmented_train_samples",
         "generated_samples",
+        "retained_simple_samples",
         "difficult_classes",
         "metrics_dir",
         "augment_dir",
@@ -83,6 +85,29 @@ def generated_count(augment_dir: Path) -> int:
     if not summary.exists():
         return 0
     return int(read_json(summary).get("generated", 0))
+
+
+def write_manifest_subset(
+    source_manifest: Path,
+    out_manifest: Path,
+    excluded_chars: set[str],
+) -> int:
+    rows = [row for row in read_csv(source_manifest) if row.get("char", "") not in excluded_chars]
+    fieldnames = list(rows[0].keys()) if rows else [
+        "path",
+        "char",
+        "char_code",
+        "source_label",
+        "source_image",
+        "background_source",
+        "background",
+        "method",
+        "pre_extract_enhance",
+        "angle",
+        "scale",
+    ]
+    write_csv(out_manifest, rows, fieldnames)
+    return len(rows)
 
 
 def select_difficult_by_simple_gain(
@@ -168,7 +193,7 @@ def select_difficult_by_simple_gain(
     return candidates
 
 
-def train_cmd(args: argparse.Namespace, out_dir: Path, aug_manifest: Path | None = None) -> list[str]:
+def train_cmd(args: argparse.Namespace, out_dir: Path, aug_manifests: list[Path] | None = None) -> list[str]:
     cmd = [
         sys.executable,
         str(ROOT / "tools" / "train_character_classifier.py"),
@@ -210,7 +235,7 @@ def train_cmd(args: argparse.Namespace, out_dir: Path, aug_manifest: Path | None
                 args.device,
             ]
         )
-    if aug_manifest is not None:
+    for aug_manifest in aug_manifests or []:
         cmd.extend(["--aug_manifest", str(aug_manifest)])
     return cmd
 
@@ -300,7 +325,8 @@ def run_experiment(args: argparse.Namespace) -> None:
     simple_aug = args.out_dir / "augment" / "simple_fusion"
     run(generate_cmd(args, splits / "train_rare_chars.csv", simple_aug, "none"))
     simple_dir = args.out_dir / "models" / "simple_fusion"
-    run(train_cmd(args, simple_dir, simple_aug / "generated_samples.csv"))
+    simple_manifest = simple_aug / "generated_samples.csv"
+    run(train_cmd(args, simple_dir, [simple_manifest]))
     simple_metrics = read_json(simple_dir / "metrics.json")
     difficult_csv = args.out_dir / "difficult_chars_by_simple_gain.csv"
     difficult = select_difficult_by_simple_gain(
@@ -313,6 +339,9 @@ def run_experiment(args: argparse.Namespace) -> None:
         args.difficulty_top_k,
     )
     difficult_classes = len(difficult)
+    difficult_chars = {str(row["char"]) for row in difficult}
+    retained_simple_manifest = simple_aug / "non_difficult_generated_samples.csv"
+    retained_simple_samples = write_manifest_subset(simple_manifest, retained_simple_manifest, difficult_chars)
     rows.append(
         {
             "stage": "simple_fusion",
@@ -320,6 +349,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             "metrics_dir": str(simple_dir),
             "augment_dir": str(simple_aug),
             "generated_samples": generated_count(simple_aug),
+            "retained_simple_samples": "",
             "difficult_classes": difficult_classes,
             **simple_metrics,
         }
@@ -330,7 +360,7 @@ def run_experiment(args: argparse.Namespace) -> None:
         aug_dir = args.out_dir / "augment" / f"difficult_{method}"
         run(generate_cmd(args, difficult_csv, aug_dir, method))
         model_dir = args.out_dir / "models" / f"difficult_{method}"
-        run(train_cmd(args, model_dir, aug_dir / "generated_samples.csv"))
+        run(train_cmd(args, model_dir, [retained_simple_manifest, aug_dir / "generated_samples.csv"]))
         metrics = read_json(model_dir / "metrics.json")
         rows.append(
             {
@@ -339,6 +369,7 @@ def run_experiment(args: argparse.Namespace) -> None:
                 "metrics_dir": str(model_dir),
                 "augment_dir": str(aug_dir),
                 "generated_samples": generated_count(aug_dir),
+                "retained_simple_samples": retained_simple_samples,
                 "difficult_classes": difficult_classes,
                 **metrics,
             }
