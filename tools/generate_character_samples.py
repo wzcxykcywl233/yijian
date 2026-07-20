@@ -225,12 +225,25 @@ def glyph_quality_ok(
     min_alpha_ratio: float,
     max_alpha_ratio: float,
     min_darkness_mean: float,
+    max_bbox_fill_ratio: float,
 ) -> bool:
     glyph = alpha > 16
     alpha_ratio = float(np.count_nonzero(glyph) / glyph.size)
     if alpha_ratio < min_alpha_ratio or alpha_ratio > max_alpha_ratio:
         return False
     if not np.any(glyph):
+        return False
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(glyph.astype(np.uint8), 8)
+    if component_count <= 1:
+        return False
+    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    area = float(stats[largest, cv2.CC_STAT_AREA])
+    width = float(stats[largest, cv2.CC_STAT_WIDTH])
+    height = float(stats[largest, cv2.CC_STAT_HEIGHT])
+    bbox_area = max(width * height, 1.0)
+    bbox_fill_ratio = area / bbox_area
+    bbox_area_ratio = bbox_area / float(glyph.size)
+    if bbox_fill_ratio > max_bbox_fill_ratio and bbox_area_ratio > 0.08:
         return False
     return float(np.mean(darkness[glyph])) >= min_darkness_mean
 
@@ -398,6 +411,7 @@ def generate_samples(
     min_alpha_ratio: float,
     max_alpha_ratio: float,
     min_darkness_mean: float,
+    max_bbox_fill_ratio: float,
     sample_attempts: int,
 ) -> list[GeneratedSample]:
     rng = random.Random(seed)
@@ -453,7 +467,7 @@ def generate_samples(
             )
             alpha = make_glyph_alpha(extraction_image, cfg)
             darkness = normalize_glyph_darkness(extraction_image, alpha)
-            if not glyph_quality_ok(alpha, darkness, min_alpha_ratio, max_alpha_ratio, min_darkness_mean):
+            if not glyph_quality_ok(alpha, darkness, min_alpha_ratio, max_alpha_ratio, min_darkness_mean, max_bbox_fill_ratio):
                 continue
             source_context, source_weight = make_source_background_context(image, alpha, source_white_threshold)
             darkness, alpha, source_context, source_weight, angle, scale = random_affine(
@@ -466,6 +480,8 @@ def generate_samples(
                 scale_range=(0.92, 1.08),
             )
             alpha = suppress_alpha_on_white_padding(alpha, source_weight, white_alpha_suppression)
+            if not glyph_quality_ok(alpha, darkness, min_alpha_ratio, max_alpha_ratio, min_darkness_mean, max_bbox_fill_ratio):
+                continue
 
             bg_path = choose_background(backgrounds_by_source, generated_for_char, rng, background_source_policy, strict_background_sources)
             bg = read_image(bg_path, cv2.IMREAD_COLOR)
@@ -552,6 +568,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min_alpha_ratio", type=float, default=0.003, help="Skip samples whose extracted glyph mask is too small.")
     parser.add_argument("--max_alpha_ratio", type=float, default=0.45, help="Skip samples whose extracted glyph mask is implausibly large.")
     parser.add_argument("--min_darkness_mean", type=float, default=0.015, help="Skip samples whose extracted ink signal is too weak.")
+    parser.add_argument("--max_bbox_fill_ratio", type=float, default=0.72, help="Skip masks whose largest component looks like a filled rectangle.")
     parser.add_argument("--sample_attempts", type=int, default=20, help="Maximum attempts per requested output sample.")
     parser.add_argument("--seed", type=int, default=42)
     return parser
@@ -589,6 +606,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         min_alpha_ratio=args.min_alpha_ratio,
         max_alpha_ratio=args.max_alpha_ratio,
         min_darkness_mean=args.min_darkness_mean,
+        max_bbox_fill_ratio=args.max_bbox_fill_ratio,
         sample_attempts=args.sample_attempts,
     )
     write_manifest(args.out_dir / "generated_samples.csv", rows)

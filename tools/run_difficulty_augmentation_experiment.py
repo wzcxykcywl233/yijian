@@ -309,6 +309,8 @@ def generate_cmd(
         str(args.white_alpha_suppression),
         "--sample_attempts",
         str(args.sample_attempts),
+        "--max_bbox_fill_ratio",
+        str(args.max_bbox_fill_ratio),
         "--seed",
         str(args.seed),
     ]
@@ -452,6 +454,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--darkness_gamma", type=float, default=0.6)
     parser.add_argument("--source_bg_strength", type=float, default=0.45)
     parser.add_argument("--white_alpha_suppression", type=float, default=0.85)
+    parser.add_argument("--max_bbox_fill_ratio", type=float, default=0.72)
     parser.add_argument("--sample_attempts", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
     return parser

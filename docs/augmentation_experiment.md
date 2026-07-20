@@ -91,6 +91,7 @@ python .\tools\build_single_char_background_library.py `
   --difficulty_threshold 0.6 `
   --difficulty_min_improvement 0.02 `
   --difficulty_top_k 100 `
+  --max_bbox_fill_ratio 0.72 `
   --strict_background_sources
 ```
 
@@ -149,4 +150,5 @@ difficulty_aug_experiment/
 - 第一轮 `simple_fusion` 使用 `--pre_extract_enhance none`。
 - 困难字阶段使用“真实训练集 + 非困难字 simple_fusion 样本 + 当前方法重新生成的困难字样本”。也就是说，只替换困难字的 simple_fusion 数据，避免把对其他字有效的简单融合样本一起丢掉。
 - 背景默认四源轮转，正式实验建议加 `--strict_background_sources`，确保四种医简背景都参与。
+- `--max_bbox_fill_ratio` 用于过滤“整块深色矩形被误当作字符”的坏样本；默认 `0.72`，若仍出现黑/棕色空方块，可降到 `0.65`，但生成数量可能减少。
 - 选择最终方法时，优先看同一验证集上的整体准确率、困难字平均准确率和逐类提升情况；测试集建议只在最终候选方法确定后使用一次。
