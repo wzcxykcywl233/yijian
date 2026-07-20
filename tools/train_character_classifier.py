@@ -226,7 +226,7 @@ def select_difficult(
     top_k: int | None,
     target_count: int,
 ) -> list[dict[str, object]]:
-    candidates = [m for m in metrics if m.support > 0]
+    candidates = [m for m in metrics if m.support > 0 and m.train_count < target_count]
     ranked = sorted(candidates, key=lambda x: (x.accuracy, -x.support, x.char))
     selected = [m for m in ranked if m.accuracy <= threshold]
     if top_k is not None:
@@ -249,7 +249,6 @@ def select_difficult(
             "support": metric.support,
         }
         for metric in selected
-        if metric.train_count < target_count
     ]
 
 
