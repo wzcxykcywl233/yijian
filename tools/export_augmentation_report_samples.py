@@ -145,6 +145,7 @@ def export_samples(
     for char in chars:
         char_code = safe_char_label(char)
         char_dir = out_dir / filesystem_label(char, char_code)
+        char_dir.mkdir(parents=True, exist_ok=True)
         (char_dir / "label.txt").write_text(f"char={char}\nchar_code={char_code}\n", encoding="utf-8")
 
         original_rows = sampled(originals.get(char, []), per_group, rng)
