@@ -130,6 +130,42 @@ image_quality_scores/
 - 若某些方法的融合坏样本比例低、SSIM/Entropy/字符 mask 指标更稳，则保留该方法。
 - 若某些方法经常放大裂纹、帛纹或生成实心方块，则淘汰或调低增强强度。
 
+## 高低分图像对比导出
+
+为了在汇报中直观看到评分是否合理，可以导出每个来源/方法下的高分与低分样例：
+
+```powershell
+& $PY .\tools\export_quality_score_examples.py `
+  --quality_dir .\data_exp\quality_aug_experiment\quality_scores `
+  --out_dir .\data_exp\quality_score_examples `
+  --kind both `
+  --per_group 12 `
+  --include_only_failed_low
+```
+
+输出结构：
+
+```text
+quality_score_examples/
+  source/
+    天回/
+      high/
+      low/
+    马王堆/
+      high/
+      low/
+  generated/
+    gamma_usm/
+      high/
+      low/
+    guided_gamma_usm/
+      high/
+      low/
+  quality_score_examples_manifest.csv
+```
+
+文件名中会带上 `score`、`char` 和 `reason`。其中 `reason` 可用于解释低分原因，例如 `blurred`、`low_contrast`、`filled_rectangle_mask`、`weak_ink` 等。
+
 ## 当前建议
 
 CNN 相关脚本暂时保留为备选，不作为当前主结论依据。当前例会和下一轮实验优先报告图像评分与可视化抽样结果。
