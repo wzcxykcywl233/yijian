@@ -144,6 +144,33 @@ difficulty_aug_experiment/
 - `difficult_mean_accuracy`
 - `difficult_accuracy_delta_vs_simple`
 
+## 报告样例导出
+
+可以把每个字符的原始单字、simple_fusion 样本和各图像增强方法样本随机抽样复制到报告目录：
+
+```powershell
+& $PY .\tools\export_augmentation_report_samples.py `
+  --data_root $DATA_ROOT `
+  --clean_samples .\data_exp\label_index\clean_samples.csv `
+  --experiment_dir .\data_exp\difficulty_aug_experiment `
+  --out_dir .\data_exp\report_samples `
+  --per_group 4
+```
+
+若只想导出本轮筛出的困难字：
+
+```powershell
+& $PY .\tools\export_augmentation_report_samples.py `
+  --data_root $DATA_ROOT `
+  --clean_samples .\data_exp\label_index\clean_samples.csv `
+  --experiment_dir .\data_exp\difficulty_aug_experiment `
+  --out_dir .\data_exp\report_samples_difficult `
+  --chars_csv .\data_exp\difficulty_aug_experiment\difficult_chars_by_simple_gain.csv `
+  --per_group 4
+```
+
+输出会按字符分文件夹，每个字符下包含 `00_original`、`01_simple_fusion`、`02_gamma` 等子目录；文件名中会标明方法、背景来源和源数据来源，同时生成 `export_manifest.csv` 方便报告引用。
+
 ## 对照原则
 
 - `splits/` 只生成一次，所有方法共享同一 train/val/test，避免划分差异影响结论。
