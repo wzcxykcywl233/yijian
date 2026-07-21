@@ -215,14 +215,27 @@ def image_metrics(image: np.ndarray, thresholds: Thresholds, cfg: ExtractConfig)
     }
 
 
-def compare_to_reference(image: np.ndarray, reference: np.ndarray) -> dict[str, object]:
+def compare_to_reference(image: np.ndarray, reference: np.ndarray, cfg: ExtractConfig) -> dict[str, object]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     ref_gray = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
     if ref_gray.shape != gray.shape:
         ref_gray = cv2.resize(ref_gray, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_AREA)
+    ref_for_mask = reference
+    if ref_for_mask.shape[:2] != gray.shape[:2]:
+        ref_for_mask = cv2.resize(ref_for_mask, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_AREA)
+    alpha = make_glyph_alpha(ref_for_mask, cfg)
+    mask = cv2.resize(alpha, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_AREA) > 16
+    if int(np.count_nonzero(mask)) >= 16:
+        foreground_psnr = psnr(gray[mask], ref_gray[mask])
+        foreground_ssim = ssim_gray(np.where(mask, gray, 0).astype(np.uint8), np.where(mask, ref_gray, 0).astype(np.uint8))
+    else:
+        foreground_psnr = ""
+        foreground_ssim = ""
     return {
         "psnr": round(psnr(gray, ref_gray), 6),
         "ssim": round(ssim_gray(gray, ref_gray), 6),
+        "foreground_psnr": round(foreground_psnr, 6) if foreground_psnr != "" else "",
+        "foreground_ssim": round(foreground_ssim, 6) if foreground_ssim != "" else "",
         "entropy_delta": round(entropy(gray) - entropy(ref_gray), 6),
     }
 
@@ -251,8 +264,10 @@ def final_score(metrics: dict[str, object], kind: str) -> float:
     no_ref = float(metrics["no_ref_score"])
     if kind == "source" or metrics.get("psnr") == "":
         return no_ref
-    psnr_score = bounded(float(metrics["psnr"]), 12.0, 32.0)
-    ssim_score = bounded(float(metrics["ssim"]), 0.45, 0.98)
+    psnr_value = metrics.get("foreground_psnr") or metrics.get("psnr")
+    ssim_value = metrics.get("foreground_ssim") or metrics.get("ssim")
+    psnr_score = bounded(float(psnr_value), 12.0, 32.0)
+    ssim_score = bounded(float(ssim_value), 0.45, 0.98)
     entropy_score = closeness(float(metrics["entropy_delta"]), 0.15, 1.2)
     return round(0.55 * no_ref + 0.15 * psnr_score + 0.20 * ssim_score + 0.10 * entropy_score, 6)
 
@@ -281,11 +296,11 @@ def score_image(path: Path, thresholds: Thresholds, cfg: ExtractConfig, referenc
     if reference is not None and reference.exists():
         ref_image = read_image(reference, cv2.IMREAD_COLOR)
         if ref_image is not None:
-            metrics.update(compare_to_reference(image, ref_image))
+            metrics.update(compare_to_reference(image, ref_image, cfg))
         else:
-            metrics.update({"psnr": "", "ssim": "", "entropy_delta": ""})
+            metrics.update({"psnr": "", "ssim": "", "foreground_psnr": "", "foreground_ssim": "", "entropy_delta": ""})
     else:
-        metrics.update({"psnr": "", "ssim": "", "entropy_delta": ""})
+        metrics.update({"psnr": "", "ssim": "", "foreground_psnr": "", "foreground_ssim": "", "entropy_delta": ""})
 
     score = final_score(metrics, kind)
     threshold = thresholds.min_source_score if kind == "source" else thresholds.min_generated_score
@@ -417,6 +432,8 @@ def summarize_quality(rows: list[dict[str, object]], group_key: str) -> list[dic
         avg_entropy = sum(float(row.get("entropy", 0.0) or 0.0) for row in items) / max(total, 1)
         avg_ssim_values = [float(row["ssim"]) for row in items if row.get("ssim") not in ("", None)]
         avg_psnr_values = [float(row["psnr"]) for row in items if row.get("psnr") not in ("", None)]
+        avg_foreground_ssim_values = [float(row["foreground_ssim"]) for row in items if row.get("foreground_ssim") not in ("", None)]
+        avg_foreground_psnr_values = [float(row["foreground_psnr"]) for row in items if row.get("foreground_psnr") not in ("", None)]
         summaries.append(
             {
                 group_key: group,
@@ -427,6 +444,12 @@ def summarize_quality(rows: list[dict[str, object]], group_key: str) -> list[dic
                 "avg_entropy": round(avg_entropy, 6),
                 "avg_ssim": round(sum(avg_ssim_values) / len(avg_ssim_values), 6) if avg_ssim_values else "",
                 "avg_psnr": round(sum(avg_psnr_values) / len(avg_psnr_values), 6) if avg_psnr_values else "",
+                "avg_foreground_ssim": round(sum(avg_foreground_ssim_values) / len(avg_foreground_ssim_values), 6)
+                if avg_foreground_ssim_values
+                else "",
+                "avg_foreground_psnr": round(sum(avg_foreground_psnr_values) / len(avg_foreground_psnr_values), 6)
+                if avg_foreground_psnr_values
+                else "",
             }
         )
     return summaries

@@ -26,6 +26,11 @@
 - `SSIM`：反映结构相似性，越高表示字符结构越稳定。
 - `Entropy`：反映信息量，适当提高说明细节更丰富；过高可能表示噪声或背景也被增强。
 
+注意：对于已经完成背景迁移的融合图，整图 PSNR/SSIM 会受到背景替换影响，数值天然偏低。因此脚本同时输出：
+
+- `psnr` / `ssim`：整图相似度，仅作参考。
+- `foreground_psnr` / `foreground_ssim`：基于源字符 mask 的前景相似度，更适合判断字符结构是否保留。
+
 额外补充的图像质量指标：
 
 - `contrast_std`：灰度对比度，过低说明字符和背景不易区分。
@@ -122,7 +127,7 @@ image_quality_scores/
 也可以直接看两个汇总表：
 
 - `source_quality_summary.csv`：按医简来源汇总原图质量。
-- `generated_quality_summary.csv`：按增强方法汇总通过率、平均质量分、平均 PSNR/SSIM/Entropy。
+- `generated_quality_summary.csv`：按增强方法汇总通过率、平均质量分、平均 PSNR/SSIM/Entropy，以及更重要的平均前景 PSNR/SSIM。
 
 第三步再决定是否重跑增强：
 
