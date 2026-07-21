@@ -81,8 +81,11 @@ def discover_augmented_manifests(experiment_dir: Path, methods: set[str] | None)
     if simple.exists():
         manifests.append(("01_simple_fusion", "simple_fusion", simple))
 
-    for manifest in sorted((experiment_dir / "augment").glob("difficult_*/generated_samples.csv")):
-        method = manifest.parent.name.removeprefix("difficult_")
+    for manifest in sorted((experiment_dir / "augment").glob("*/generated_samples.csv")):
+        dirname = manifest.parent.name
+        if dirname == "simple_fusion":
+            continue
+        method = dirname.removeprefix("difficult_").removeprefix("preenhance_")
         if methods is not None and method not in methods:
             continue
         manifests.append((f"02_{clean_name(method)}", method, manifest))
