@@ -151,7 +151,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rare_chars", type=Path)
     parser.add_argument("--target_count", type=int, default=20)
     parser.add_argument("--limit_chars", type=int)
-    parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--image_size", type=int, default=128, help="Fallback square size for legacy fixed-size generation; default generation preserves source crop size.")
     parser.add_argument("--pre_extract_methods", default="gamma,clahe,usm,gamma_usm,guided_gamma_usm,median_gamma_usm")
     parser.add_argument("--filter_sources_first", action="store_true")
     parser.add_argument("--require_source_ok_for_manifest", action="store_true")

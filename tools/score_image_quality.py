@@ -32,6 +32,10 @@ DEFAULT_MANIFEST_FIELDS = [
     "char_code",
     "source_label",
     "source_image",
+    "source_width",
+    "source_height",
+    "output_width",
+    "output_height",
     "background_source",
     "background",
     "method",
@@ -293,6 +297,7 @@ def score_image(path: Path, thresholds: Thresholds, cfg: ExtractConfig, referenc
         return {"readable": False, "quality_score": 0.0, "quality_ok": False, "quality_reasons": "unreadable"}
 
     metrics = image_metrics(image, thresholds, cfg)
+    metrics.update({"image_width": image.shape[1], "image_height": image.shape[0]})
     if reference is not None and reference.exists():
         ref_image = read_image(reference, cv2.IMREAD_COLOR)
         if ref_image is not None:
@@ -387,6 +392,15 @@ def score_generated(
                 "method": row.get("pre_extract_enhance", "") or row.get("method", ""),
                 "background_source": row.get("background_source", ""),
                 "reference_path": str(ref) if ref is not None else "",
+                "source_width": row.get("source_width", ""),
+                "source_height": row.get("source_height", ""),
+                "output_width": row.get("output_width", ""),
+                "output_height": row.get("output_height", ""),
+                "source_output_size_match": (
+                    row.get("source_width", "") == row.get("output_width", "")
+                    and row.get("source_height", "") == row.get("output_height", "")
+                    and row.get("source_width", "") != ""
+                ),
                 "source_quality_ok": source_ok,
                 **metrics,
                 "quality_ok": generated_ok,

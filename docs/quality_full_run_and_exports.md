@@ -2,6 +2,8 @@
 
 当前路线暂时不使用 CNN 训练结果作为困难字判断依据，而是先筛选原始单字图像质量，再生成简单背景融合和不同图像增强后的背景融合结果，最后对生成图像进行图像质量评分与可视化抽样。
 
+生成阶段默认遵守“准入准出”原则：每张增强图的宽高与对应原始单字图片保持一致。`generated_samples.csv` 和 `generated_image_quality.csv` 中会记录 `source_width`、`source_height`、`output_width`、`output_height`，并在评分表中提供 `source_output_size_match` 方便检查。
+
 ## 1. 全量运行
 
 远程电脑先确认变量：

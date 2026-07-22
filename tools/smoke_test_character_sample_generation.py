@@ -87,6 +87,12 @@ def main() -> int:
     outputs = list((out_dir / "images").rglob("*.png"))
     if len(outputs) != 2:
         raise AssertionError(f"expected 2 generated images, got {len(outputs)}")
+    for output in outputs:
+        image = cv2.imdecode(np.fromfile(str(output), dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise AssertionError(f"failed to read generated image: {output}")
+        if image.shape[:2] != (96, 96):
+            raise AssertionError(f"expected output size 96x96 to match source, got {image.shape[:2]} for {output}")
     if not (out_dir / "images" / "一").exists():
         raise AssertionError("character-named output directory missing")
     if not (out_dir / "generated_samples.csv").exists():

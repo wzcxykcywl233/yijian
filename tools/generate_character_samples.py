@@ -30,6 +30,10 @@ class GeneratedSample:
     char_code: str
     source_label: str
     source_image: str
+    source_width: int
+    source_height: int
+    output_width: int
+    output_height: int
     background_source: str
     background: str
     method: str
@@ -133,14 +137,18 @@ def choose_background(
     return rng.choice(all_paths)
 
 
-def resize_cover(image: np.ndarray, size: int) -> np.ndarray:
+def resize_cover(image: np.ndarray, size: int | tuple[int, int]) -> np.ndarray:
     h, w = image.shape[:2]
-    scale = max(size / h, size / w)
+    if isinstance(size, tuple):
+        target_w, target_h = size
+    else:
+        target_w = target_h = size
+    scale = max(target_h / h, target_w / w)
     resized = cv2.resize(image, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_CUBIC)
     rh, rw = resized.shape[:2]
-    y = max(0, (rh - size) // 2)
-    x = max(0, (rw - size) // 2)
-    return resized[y : y + size, x : x + size].copy()
+    y = max(0, (rh - target_h) // 2)
+    x = max(0, (rw - target_w) // 2)
+    return resized[y : y + target_h, x : x + target_w].copy()
 
 
 def apply_gamma(image: np.ndarray, gamma: float) -> np.ndarray:
@@ -303,9 +311,9 @@ def prefuse_background(
     if strength <= 0:
         return background
 
-    size = background.shape[0]
-    context = cv2.resize(source_context, (size, size), interpolation=cv2.INTER_CUBIC)
-    weight = cv2.resize(source_weight, (size, size), interpolation=cv2.INTER_AREA).astype(np.float32)
+    h, w = background.shape[:2]
+    context = cv2.resize(source_context, (w, h), interpolation=cv2.INTER_CUBIC)
+    weight = cv2.resize(source_weight, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32)
     weight = cv2.GaussianBlur(weight, (0, 0), 5)
     weight = np.clip(weight * strength, 0.0, 0.85)
     if float(weight.max()) <= 0:
@@ -360,9 +368,9 @@ def composite_on_background(
     alpha_power: float,
     darkness_gamma: float,
 ) -> np.ndarray:
-    size = background.shape[0]
-    darkness = cv2.resize(glyph_darkness, (size, size), interpolation=cv2.INTER_AREA)
-    a = cv2.resize(alpha, (size, size), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+    h, w = background.shape[:2]
+    darkness = cv2.resize(glyph_darkness, (w, h), interpolation=cv2.INTER_AREA)
+    a = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
     a = cv2.GaussianBlur(a, (3, 3), 0)
     a = np.clip(a, 0.0, 1.0)
     a = np.power(a, alpha_power)
@@ -413,6 +421,7 @@ def generate_samples(
     min_darkness_mean: float,
     max_bbox_fill_ratio: float,
     sample_attempts: int,
+    preserve_source_size: bool,
 ) -> list[GeneratedSample]:
     rng = random.Random(seed)
     rows = read_csv(clean_samples)
@@ -456,6 +465,8 @@ def generate_samples(
             image = read_image(image_path, cv2.IMREAD_COLOR)
             if image is None:
                 continue
+            source_h, source_w = image.shape[:2]
+            output_size = (source_w, source_h) if preserve_source_size else (image_size, image_size)
             extraction_image = enhance_before_extraction(
                 image,
                 pre_extract_enhance,
@@ -487,7 +498,7 @@ def generate_samples(
             bg = read_image(bg_path, cv2.IMREAD_COLOR)
             if bg is None:
                 continue
-            bg = resize_cover(bg, image_size)
+            bg = resize_cover(bg, output_size)
             if prefuse_source_bg:
                 bg = prefuse_background(bg, source_context, source_weight, source_bg_strength)
             out = composite_on_background(darkness, alpha, bg, rng, ink_strength_range, alpha_power, darkness_gamma)
@@ -509,6 +520,10 @@ def generate_samples(
                     char_code=char_code,
                     source_label=row.get("source_label", ""),
                     source_image=str(image_path),
+                    source_width=source_w,
+                    source_height=source_h,
+                    output_width=int(out.shape[1]),
+                    output_height=int(out.shape[0]),
                     background_source=background_source_name(bg_path, background_root),
                     background=str(bg_path),
                     method="preenhanced_opencv_grabcut_softmask_source_bg_prefusion"
@@ -536,7 +551,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--per_char", type=int, default=2)
     parser.add_argument("--target_count", type=int, help="Generate enough samples to bring each selected class up to this count.")
     parser.add_argument("--limit_chars", type=int, help="Limit number of classes for smoke tests.")
-    parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--image_size", type=int, default=128, help="Fallback square output size when --no_preserve_source_size is used.")
+    parser.add_argument("--no_preserve_source_size", action="store_true", help="Use fixed --image_size output instead of matching each source crop size.")
     parser.add_argument("--mask_feather", type=int, default=3, help="Character alpha feather. Smaller values keep strokes sharper.")
     parser.add_argument("--ink_strength_min", type=float, default=155.0)
     parser.add_argument("--ink_strength_max", type=float, default=225.0)
@@ -608,6 +624,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         min_darkness_mean=args.min_darkness_mean,
         max_bbox_fill_ratio=args.max_bbox_fill_ratio,
         sample_attempts=args.sample_attempts,
+        preserve_source_size=not args.no_preserve_source_size,
     )
     write_manifest(args.out_dir / "generated_samples.csv", rows)
     summary = {
@@ -615,6 +632,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         "out_dir": str(args.out_dir),
         "target_count": args.target_count,
         "pre_extract_enhance": args.pre_extract_enhance,
+        "preserve_source_size": not args.no_preserve_source_size,
+        "fallback_image_size": args.image_size,
         "background_source_policy": "random" if args.no_prefer_absent_source_backgrounds else args.background_source_policy,
         "strict_background_sources": args.strict_background_sources,
     }
